@@ -5,11 +5,17 @@ const port = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// List of public Invidious instances (with API support)
+// ============================================
+//  List of public Invidious instances (updated)
+// ============================================
 const INV_INSTANCES = [
-    'https://invidious.io',
-    'https://invidious.nerdvpn.de',
+    'https://yewtu.be',                // Very reliable
+    'https://invidious.snopyta.org',   // Good uptime
+    'https://invidious.fdn.fr',
+    'https://inv.riverside.rocks',
+    'https://invidious.kavin.rocks',   // Official – may be rate-limited
     'https://invidious.private.coffee',
+    'https://invidious.nerdvpn.de',
     'https://iv.melmac.net'
 ];
 
@@ -17,20 +23,31 @@ const INV_INSTANCES = [
 //  Utility: fetch from Invidious with fallback
 // ============================================
 async function invidiousFetch(endpoint, retries = 2) {
+    let lastError = null;
     for (let attempt = 0; attempt < retries; attempt++) {
         for (const base of INV_INSTANCES) {
             try {
                 const url = `${base}${endpoint}`;
-                const response = await axios.get(url, { timeout: 10000 });
+                const response = await axios.get(url, {
+                    timeout: 15000,  // increased timeout
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (compatible; Atassa/1.0)'
+                    }
+                });
                 return response.data;
             } catch (e) {
                 console.warn(`Instance ${base} failed:`, e.message);
+                lastError = e;
+                // Wait a bit before next instance
+                await new Promise(r => setTimeout(r, 500));
             }
         }
-        // Wait before retry
-        await new Promise(r => setTimeout(r, 1000));
+        // Wait before retry all over again
+        if (attempt < retries - 1) {
+            await new Promise(r => setTimeout(r, 1000));
+        }
     }
-    throw new Error('All Invidious instances failed');
+    throw new Error(`All Invidious instances failed: ${lastError?.message || 'unknown error'}`);
 }
 
 // ============================================
@@ -51,7 +68,6 @@ app.post('/api/search', async (req, res) => {
 
     try {
         const data = await invidiousFetch(`/api/v1/search?q=${encodeURIComponent(query)}&type=video&sortBy=relevance`);
-        // Limit results
         const results = data.slice(0, limit).map(v => ({
             videoId: v.videoId,
             title: v.title,
@@ -83,9 +99,7 @@ app.post('/api/stream', async (req, res) => {
 
     try {
         const data = await invidiousFetch(`/api/v1/videos/${videoId}`);
-        // Find best audio stream (prefer m4a, then opus)
         const audioFormats = data.adaptiveFormats.filter(f => f.type && f.type.startsWith('audio/'));
-        // Choose highest bitrate
         const bestAudio = audioFormats.reduce((best, current) => {
             const br = current.bitrate || 0;
             return br > (best.bitrate || 0) ? current : best;
